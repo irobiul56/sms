@@ -115,7 +115,7 @@ Route::middleware(['auth','admin']) -> group(function () {
         ->middleware(['auth', 'teacher'])
         ->name('teacher.dashboard');
 
-    Route::get('/student/dashboard', StudentDashboardController::class)
+    Route::get('/students/dashboard', StudentDashboardController::class)
         ->middleware(['auth', 'student'])
         ->name('student.dashboard');
     Route::post('/student/homework/{homework}/toggle', [StudentHomeworkController::class, 'toggle'])
@@ -202,6 +202,8 @@ Route::middleware(['auth','admin']) -> group(function () {
     Route::delete('/homework/{homework}', [HomeworkController::class, 'destroy'])
         ->name('homework.destroy')
         ->middleware(['auth', 'verified']);
+    Route::get('/class-routines/print', [ClassRoutineController::class, 'print'])
+        ->name('class-routines.print');
     Route::resource('class-routines', ClassRoutineController::class)
         ->only(['index', 'store', 'update', 'destroy'])
         ->middleware(['auth', 'verified']);

@@ -16,6 +16,17 @@ return Application::configure(basePath: dirname(__DIR__))
             \Illuminate\Http\Middleware\AddLinkHeadersForPreloadedAssets::class,
         ]);
 
+        $middleware->redirectUsersTo(function (\Illuminate\Http\Request $request) {
+            $usertype = strtolower((string) $request->user()?->usertype);
+
+            return match ($usertype) {
+                'student' => route('student.dashboard'),
+                'teacher' => route('teacher.dashboard'),
+                'admin' => route('dashboard'),
+                default => route('institute.dashboard'),
+            };
+        });
+
          $middleware -> alias([
             'admin' => \App\Http\Middleware\Admin::class,
             'student' => \App\Http\Middleware\StudentAccess::class,

@@ -10,6 +10,7 @@ use App\Models\Teacher;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
@@ -17,6 +18,52 @@ use Inertia\Response;
 
 class ClassRoutineController extends Controller
 {
+    public function print(Request $request): Response
+    {
+        $instituteId = Auth::user()->institute_id;
+        $academicYear = $this->currentAcademicYear($instituteId);
+        abort_unless($academicYear, 404);
+
+        $classId = $request->input('class_id');
+        $query = ClassRoutine::query()
+            ->where('institute_id', $instituteId)
+            ->where('academic_year_id', $academicYear->id)
+            ->with(['instituteClass:id,name,bn_name', 'section:id,name', 'instituteSubject:id,name,bn_name', 'teacher:id,name,bn_name'])
+            ->orderBy('institute_class_id')
+            ->orderBy('day_of_week')
+            ->orderBy('start_time');
+
+        if ($classId && $classId !== 'all') {
+            $query->where('institute_class_id', $classId);
+        }
+
+        $routines = $query->get()->map(fn (ClassRoutine $routine) => [
+            'id' => $routine->id,
+            'class_name' => $routine->instituteClass->bn_name ?: $routine->instituteClass->name,
+            'class_name_en' => $routine->instituteClass->name,
+            'section_name' => $routine->section?->name,
+            'subject_name' => $routine->instituteSubject->bn_name ?: $routine->instituteSubject->name,
+            'subject_name_en' => $routine->instituteSubject->name,
+            'teacher_name' => $routine->teacher?->bn_name ?: $routine->teacher?->name,
+            'teacher_name_en' => $routine->teacher?->name,
+            'day_of_week' => $routine->day_of_week,
+            'start_time' => substr($routine->start_time, 0, 5),
+            'end_time' => substr($routine->end_time, 0, 5),
+            'classroom' => $routine->classroom,
+        ])->values();
+
+        abort_if($routines->isEmpty(), 404);
+
+        return Inertia::render('Institute/ClassRoutines/RoutinePrint', [
+            'institute' => [
+                'name' => Auth::user()->institute->name,
+                'address' => Auth::user()->institute->address,
+            ],
+            'academicYear' => $academicYear->session ?: $academicYear->name,
+            'routines' => $routines,
+        ]);
+    }
+
     public function index(): Response
     {
         $instituteId = Auth::user()->institute_id;
@@ -94,6 +141,70 @@ class ClassRoutineController extends Controller
             throw ValidationException::withMessages([
                 'academic_year' => 'রুটিন যোগ করতে আগে একটি চলতি শিক্ষাবর্ষ নির্ধারণ করুন।',
             ]);
+        }
+
+        if ($request->has('routines')) {
+            $common = $request->validate([
+                'institute_class_id' => [
+                    'required',
+                    Rule::exists('institute_classes', 'id')->where('institute_id', $instituteId),
+                ],
+                'section_id' => [
+                    'nullable',
+                    Rule::exists('sections', 'id')
+                        ->where('institute_id', $instituteId)
+                        ->where('institute_class_id', $request->input('institute_class_id')),
+                ],
+                'institute_subject_id' => [
+                    'required',
+                    Rule::exists('institute_class_institute_subjects', 'institute_subject_id')
+                        ->where('institute_class_id', $request->input('institute_class_id')),
+                ],
+                'routines' => ['required', 'array', 'min:1'],
+            ]);
+
+            $rows = $request->validate([
+                'routines.*.teacher_id' => [
+                    'nullable',
+                    Rule::exists('teachers', 'id')->where('institute_id', $instituteId),
+                ],
+                'routines.*.day_of_week' => ['required', 'integer', 'between:0,6'],
+                'routines.*.start_time' => ['required', 'date_format:H:i'],
+                'routines.*.end_time' => ['required', 'date_format:H:i', 'after:routines.*.start_time'],
+                'routines.*.classroom' => ['nullable', 'string', 'max:100'],
+            ])['routines'];
+
+            DB::transaction(function () use ($common, $rows, $academicYear, $instituteId) {
+                foreach ($rows as $index => $row) {
+                    $data = [
+                        ...$common,
+                        ...$row,
+                        'section_id' => $common['section_id'] ?? null,
+                    ];
+                    unset($data['routines']);
+                    $this->ensureNoTimeConflict($data, $academicYear->id, $instituteId);
+
+                    foreach (array_slice($rows, 0, $index) as $existingRow) {
+                        if (
+                            (int) $existingRow['day_of_week'] === (int) $row['day_of_week']
+                            && $existingRow['start_time'] < $row['end_time']
+                            && $existingRow['end_time'] > $row['start_time']
+                        ) {
+                            throw ValidationException::withMessages([
+                                "routines.$index.start_time" => 'একই সময়ে একাধিক ক্লাস যোগ করা হয়েছে।',
+                            ]);
+                        }
+                    }
+
+                    ClassRoutine::create([
+                        ...$data,
+                        'institute_id' => $instituteId,
+                        'academic_year_id' => $academicYear->id,
+                    ]);
+                }
+            });
+
+            return redirect()->route('class-routines.index')->with('success', 'ক্লাস রুটিন যোগ হয়েছে।');
         }
 
         $data = $this->validatedData($request, $instituteId);

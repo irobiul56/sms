@@ -37,6 +37,7 @@ function createStudentPortalFixture(string $status = 'active'): array
         'institute_id' => $institute->id,
         'name' => 'Class 6',
         'numeric_value' => 6,
+        'group' => 'science',
     ]);
     $section = Section::create([
         'institute_id' => $institute->id,
@@ -76,6 +77,14 @@ function createStudentPortalFixture(string $status = 'active'): array
     return compact('owner', 'institute', 'year', 'class', 'section', 'student', 'user');
 }
 
+test('authenticated students visiting the login page are redirected to their dashboard', function () {
+    $fixture = createStudentPortalFixture();
+
+    $this->actingAs($fixture['user'])
+        ->get(route('login'))
+        ->assertRedirect(route('student.dashboard'));
+});
+
 test('students can sign in with their student ID and see their dashboard', function () {
     $fixture = createStudentPortalFixture();
 
@@ -83,7 +92,7 @@ test('students can sign in with their student ID and see their dashboard', funct
         ->post(route('login'), [
         'email' => $fixture['student']->student_id,
         'password' => 'StudentPass123!',
-    ])->assertRedirect(route('student.dashboard'));
+    ])->assertRedirect('/students/dashboard');
 
     $this->get(route('student.dashboard'))
         ->assertOk()
@@ -91,6 +100,7 @@ test('students can sign in with their student ID and see their dashboard', funct
             ->component('Student/Dashboard')
             ->where('student.name', 'রাকিব হাসান')
             ->where('student.class', 'Class 6')
+            ->where('student.group', 'বিজ্ঞান বিভাগ')
             ->where('student.section', 'A')
             ->where('student.roll', '1'));
 });
@@ -146,6 +156,60 @@ test('student exam routine marks completed, nearest, and later exams', function 
                 ->where('examRoutine.1.subjects.0.is_next', true)
                 ->where('examRoutine.2.subjects.0.status', 'upcoming')
                 ->where('examRoutine.2.subjects.0.is_next', false));
+    } finally {
+        Carbon::setTestNow();
+    }
+});
+
+test('student exam routine distinguishes today, ongoing, completed, and next exams by exact time', function () {
+    Carbon::setTestNow('2026-06-15 12:30:00');
+
+    try {
+        $fixture = createStudentPortalFixture();
+        $subject = InstituteSubject::create([
+            'institute_id' => $fixture['institute']->id,
+            'name' => 'Bangla',
+            'code' => 'ST-LIVE-Routine',
+            'full_marks' => 100,
+            'pass_marks' => 33,
+        ]);
+
+        $exam = Exam::create([
+            'academic_year_id' => $fixture['year']->id,
+            'institute_class_id' => $fixture['class']->id,
+            'name' => 'Live routine',
+            'type' => 'monthly',
+            'start_date' => '2026-06-15',
+            'end_date' => '2026-06-15',
+            'is_published' => true,
+        ]);
+
+        foreach ([
+            ['09:00', '10:00'],
+            ['12:30', '13:30'],
+            ['14:00', '15:00'],
+        ] as [$start, $end]) {
+            ExamInstituteSubjec::create([
+                'exam_id' => $exam->id,
+                'institute_subject_id' => $subject->id,
+                'institute_class_id' => $fixture['class']->id,
+                'exam_date' => '2026-06-15',
+                'start_time' => $start,
+                'end_time' => $end,
+                'full_marks' => 100,
+                'pass_marks' => 33,
+            ]);
+        }
+
+        $this->actingAs($fixture['user'])
+            ->get(route('student.dashboard'))
+            ->assertOk()
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('examRoutine.0.subjects.0.status', 'completed')
+                ->where('examRoutine.0.subjects.1.status', 'ongoing')
+                ->where('examRoutine.0.subjects.2.status', 'today')
+                ->where('examRoutine.0.subjects.1.is_next', false)
+                ->where('examRoutine.0.subjects.2.is_next', true));
     } finally {
         Carbon::setTestNow();
     }

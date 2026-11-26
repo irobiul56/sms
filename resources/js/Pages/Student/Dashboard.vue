@@ -23,6 +23,46 @@ const todayDate = computed(() => {
     const date = currentTime.value;
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 });
+const greeting = computed(() => {
+    const hour = currentTime.value.getHours();
+    if (hour >= 5 && hour < 12) return 'শুভ সকাল';
+    if (hour >= 12 && hour < 17) return 'শুভ অপরাহ্ণ';
+    if (hour >= 17 && hour < 21) return 'শুভ সন্ধ্যা';
+    return 'শুভ রাত্রি';
+});
+const getExamState = subject => {
+    if (!subject.date) return 'upcoming';
+
+    const start = new Date(`${subject.date}T${subject.start_time || '00:00'}:00`);
+    const end = new Date(`${subject.date}T${subject.end_time || '23:59'}:00`);
+    if (end <= currentTime.value) return 'completed';
+    if (start <= currentTime.value && currentTime.value < end) return 'ongoing';
+    return subject.date === todayDate.value ? 'today' : 'upcoming';
+};
+const nextExamSubjectId = computed(() => {
+    const subjects = props.examRoutine
+        .flatMap(exam => exam.subjects.map(subject => ({ ...subject })))
+        .sort((first, second) => `${first.date} ${first.start_time || '00:00'}`
+            .localeCompare(`${second.date} ${second.start_time || '00:00'}`));
+
+    const states = subjects.map(subject => getExamState(subject));
+    const ongoingIndex = states.findIndex(status => status === 'ongoing');
+    if (ongoingIndex >= 0) {
+        const next = subjects
+            .map((subject, index) => ({ subject, status: states[index] }))
+            .find(({ subject, status }) => status !== 'completed' && status !== 'ongoing'
+                && `${subject.date} ${subject.start_time || '00:00'}` > `${subjects[ongoingIndex].date} ${subjects[ongoingIndex].start_time || '00:00'}`);
+        return next?.subject.id ?? null;
+    }
+
+    const hasCompleted = states.includes('completed');
+    if (hasCompleted) {
+        return subjects.find((subject, index) => states[index] !== 'completed')?.id ?? null;
+    }
+
+    if (states.includes('today')) return null;
+    return subjects.find((subject, index) => states[index] === 'upcoming')?.id ?? null;
+});
 const weekdays = [
     { id: 6, name: 'শনিবার', short: 'শনি' },
     { id: 0, name: 'রবিবার', short: 'রবি' },
@@ -192,12 +232,12 @@ onUnmounted(() => window.clearInterval(clockInterval));
                         <span v-else>{{ initials }}</span>
                     </div>
                     <div class="welcome-copy">
-                        <p>শুভ সকাল 👋</p>
+                        <p>{{ greeting }} 👋</p>
                         <h1>{{ student.name }}</h1>
                         <span>আইডি {{ student.student_id }}</span>
                     </div>
                     <div class="student-tags">
-                        <span v-if="student.class">{{ student.class }}</span>
+                        <span v-if="student.class">{{ student.class }}<template v-if="student.group"> · {{ student.group }}</template></span>
                         <span v-if="student.section">শাখা {{ student.section }}</span>
                         <span v-if="student.roll">রোল {{ toBangla(student.roll) }}</span>
                         <span v-if="student.year">{{ toBangla(student.year) }}</span>
@@ -480,7 +520,9 @@ onUnmounted(() => window.clearInterval(clockInterval));
                 </header>
                 <div class="routine-legend" aria-label="রুটিনের রং নির্দেশিকা">
                     <span class="legend-completed">হয়ে গেছে</span>
-                    <span class="legend-next">➜ নিকটবর্তী পরীক্ষা</span>
+                    <span class="legend-today">আজকের পরীক্ষা</span>
+                    <span class="legend-ongoing">পরীক্ষাটি চলমান</span>
+                    <span class="legend-next">➜ পরের পরীক্ষা</span>
                     <span class="legend-upcoming">পরবর্তী পরীক্ষাগুলো</span>
                 </div>
                 <article v-for="exam in examRoutine" :key="exam.id" class="exam-card">
@@ -491,16 +533,20 @@ onUnmounted(() => window.clearInterval(clockInterval));
                         :key="subject.id"
                         class="exam-row"
                         :class="{
-                            'is-completed': subject.status === 'completed',
-                            'is-upcoming': subject.status === 'upcoming',
-                            'is-next': subject.is_next,
+                            'is-completed': getExamState(subject) === 'completed',
+                            'is-upcoming': getExamState(subject) === 'upcoming',
+                            'is-today': getExamState(subject) === 'today',
+                            'is-ongoing': getExamState(subject) === 'ongoing',
+                            'is-next': nextExamSubjectId === subject.id,
                         }"
                     >
                         <span class="exam-date">{{ formatDate(subject.date) }}</span>
                         <div>
                             <strong>{{ subject.name || 'বিষয়' }}</strong>
                             <small>{{ formatTime(subject.start_time) }}<template v-if="subject.end_time"> – {{ formatTime(subject.end_time) }}</template></small>
-                            <small v-if="subject.is_next" class="next-marker">➜ নিকটবর্তী পরীক্ষা</small>
+                            <small v-if="nextExamSubjectId === subject.id" class="next-marker">➜ পরের পরীক্ষা</small>
+                            <small v-else-if="getExamState(subject) === 'ongoing'" class="ongoing-marker">পরীক্ষাটি চলমান</small>
+                            <small v-else-if="getExamState(subject) === 'today'" class="today-marker">আজকের পরীক্ষা</small>
                         </div>
                         <span class="exam-marks">{{ toBangla(subject.full_marks) }}</span>
                     </div>
@@ -636,7 +682,7 @@ onUnmounted(() => window.clearInterval(clockInterval));
 .notification-count { position: absolute; top: -5px; right: -5px; display: grid; min-width: 19px; height: 19px; place-items: center; padding: 0 4px; border-radius: 99px; background: #d20d32; color: #fff; font-size: 10px; }
 .screen { padding: 20px 0 18px; animation: enter .2s ease-out; }
 @keyframes enter { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
-.welcome-card { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 15px; overflow: hidden; padding: 25px; border-radius: 28px; background: linear-gradient(120deg,#9f102d,#d51038 66%,#f14357); color: #fff; box-shadow: 0 18px 32px -16px #ca193c70; }
+.welcome-card { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 15px; overflow: hidden; padding: 25px; border-radius: 28px; background: #0f766e; color: #fff; box-shadow: 0 18px 32px -16px #0f766e70; }
 .welcome-orb { position: absolute; top: -55px; right: -40px; width: 160px; height: 160px; border-radius: 50%; background: #ffffff14; }
 .student-avatar { z-index: 1; display: grid; width: 66px; height: 66px; flex: 0 0 66px; place-items: center; overflow: hidden; border: 1px solid #ffffff69; border-radius: 22px; background: #ffffff20; font-size: 23px; font-weight: 700; }
 .student-avatar img { width: 100%; height: 100%; object-fit: cover; }
@@ -692,7 +738,7 @@ onUnmounted(() => window.clearInterval(clockInterval));
 .calendar-card { padding: 15px; }.weekdays,.calendar-grid { display: grid; grid-template-columns: repeat(7,minmax(0,1fr)); gap: 6px; text-align: center; }.weekdays { margin-bottom: 8px; color: var(--muted); font-size: 12px; font-weight: 700; }.calendar-day { display: grid; aspect-ratio: 1; place-items: center; border-radius: 11px; color: var(--muted); font-size: 14px; font-weight: 700; }.calendar-day.present { background: #dcfce7; color: #166534; }.calendar-day.absent { background: #ef4444; color: #fff; }.calendar-day.late { background: #fde68a; color: #854d0e; }.calendar-day.holiday { background: #e2e8f0; }
 .calendar-legend { display: flex; justify-content: center; gap: 12px; margin-top: 14px; color: var(--muted); font-size: 11px; }.calendar-legend span { display: flex; align-items: center; gap: 4px; }.calendar-legend i { width: 10px; height: 10px; border-radius: 3px; }.legend-present { background: #bbf7d0; }.legend-absent { background: #ef4444; }.legend-late { background: #fcd34d; }
 .attendance-log { padding: 0 14px; }.attendance-log-row { display: flex; justify-content: space-between; padding: 11px 0; border-bottom: 1px solid var(--line); font-size: 13px; }.attendance-log-row:last-of-type { border: 0; }.attendance-log-row strong { padding: 2px 9px; border-radius: 99px; font-size: 11px; }.attendance-log-row strong.present { background: #dcfce7; color: #166534; }.attendance-log-row strong.absent { background: #fee2e2; color: #991b1b; }.attendance-log-row strong.late { background: #fef3c7; color: #92400e; }
-.exam-card { margin-bottom: 12px; padding: 17px; border-radius: 23px; background: var(--card); box-shadow: 0 1px 2px #14182b0a,0 8px 24px -14px #14182b24; }.exam-card h2 { margin: 0; font-size: 17px; }.exam-date-range { margin: 2px 0 10px; color: var(--muted); font-size: 12px; }.routine-legend { display: flex; flex-wrap: wrap; gap: 6px; margin: -5px 0 12px; }.routine-legend span { padding: 4px 8px; border-radius: 99px; font-size: 10px; font-weight: 700; }.legend-completed { background: #fee2e2; color: #b91c1c; }.legend-next { background: #dcfce7; color: #166534; }.legend-upcoming { background: #dbeafe; color: #1d4ed8; }.exam-row { display: flex; align-items: center; gap: 10px; padding: 11px 8px; border-top: 1px solid var(--line); }.exam-row.is-completed { border-radius: 10px; background: #fff1f2; }.exam-row.is-upcoming { background: #eff6ff; }.exam-row.is-next { border-radius: 10px; background: #ecfdf5; box-shadow: inset 3px 0 #16a34a; }.exam-date { width: 76px; flex: 0 0 76px; color: #0a6a1c; font-size: 11px; font-weight: 700; }.exam-row.is-completed .exam-date,.exam-row.is-completed div strong { color: #b91c1c; }.exam-row div { display: grid; flex: 1; min-width: 0; }.exam-row div strong { font-size: 13px; }.exam-row small { color: var(--muted); font-size: 11px; }.exam-row small.next-marker { color: #15803d; font-weight: 700; }.exam-marks { color: var(--muted); font-size: 12px; }
+.exam-card { margin-bottom: 12px; padding: 17px; border-radius: 23px; background: var(--card); box-shadow: 0 1px 2px #14182b0a,0 8px 24px -14px #14182b24; }.exam-card h2 { margin: 0; font-size: 17px; }.exam-date-range { margin: 2px 0 10px; color: var(--muted); font-size: 12px; }.routine-legend { display: flex; flex-wrap: wrap; gap: 6px; margin: -5px 0 12px; }.routine-legend span { padding: 4px 8px; border-radius: 99px; font-size: 10px; font-weight: 700; }.legend-completed { background: #fee2e2; color: #b91c1c; }.legend-today { background: #fef3c7; color: #92400e; }.legend-ongoing { background: #ede9fe; color: #6d28d9; }.legend-next { background: #dcfce7; color: #166534; }.legend-upcoming { background: #dbeafe; color: #1d4ed8; }.exam-row { display: flex; align-items: center; gap: 10px; padding: 11px 8px; border-top: 1px solid var(--line); }.exam-row.is-completed { border-radius: 10px; background: #fff1f2; }.exam-row.is-upcoming { background: #eff6ff; }.exam-row.is-today { border-radius: 10px; background: #fffbeb; box-shadow: inset 3px 0 #d97706; }.exam-row.is-ongoing { border-radius: 10px; background: #f5f3ff; box-shadow: inset 3px 0 #7c3aed; }.exam-row.is-next { border-radius: 10px; background: #ecfdf5; box-shadow: inset 3px 0 #16a34a; }.exam-date { width: 76px; flex: 0 0 76px; color: #0a6a1c; font-size: 11px; font-weight: 700; }.exam-row.is-completed .exam-date,.exam-row.is-completed div strong { color: #b91c1c; }.exam-row div { display: grid; flex: 1; min-width: 0; }.exam-row div strong { font-size: 13px; }.exam-row small { color: var(--muted); font-size: 11px; }.exam-row small.next-marker { color: #15803d; font-weight: 700; }.exam-row small.today-marker { color: #92400e; font-weight: 700; }.exam-row small.ongoing-marker { color: #6d28d9; font-weight: 700; }.exam-marks { color: var(--muted); font-size: 12px; }
 .notice-card { margin-bottom: 10px; padding: 15px; }.notice-heading { display: flex; align-items: center; gap: 9px; }.notice-heading strong { font-size: 15px; }.notice-card p { margin: 8px 0; color: var(--muted); font-size: 13px; line-height: 1.55; white-space: pre-line; }.notice-card small { color: var(--muted); font-size: 11px; }
 .bottom-nav { position: fixed; z-index: 10; right: 0; bottom: 0; left: 0; display: grid; max-width: 760px; grid-template-columns: repeat(5,1fr); margin: 0 auto; padding: 9px 5px max(10px,env(safe-area-inset-bottom)); border-top: 1px solid #e6e9f0; background: #ffffffed; backdrop-filter: blur(14px); }.bottom-nav button { position: relative; display: grid; justify-items: center; gap: 4px; padding: 3px 0; border: 0; background: transparent; color: #9aa5b7; font-family: inherit; font-size: 12px; font-weight: 700; }.bottom-nav button i { font-size: 21px; line-height: 1; }.bottom-nav button.active { color: #c8102e; }.bottom-nav button.active::before { position: absolute; top: -10px; width: 32px; height: 4px; border-radius: 0 0 4px 4px; background: #c8102e; content: ''; }
 .bottom-nav { background: #ffffffed; }
@@ -700,8 +746,8 @@ onUnmounted(() => window.clearInterval(clockInterval));
 .quick-icon.rose { background: #fff0f2; }.quick-icon.blue { background: #e8f4fc; }.quick-icon.green { background: #e9f8ee; }.quick-icon.amber { background: #fff6df; }.quick-icon.orange { background: #fff0e3; }
 .date-tile { background: #fff0f2; }
 .calendar-day.present { background: #dcfce7; color: #166534; }.calendar-day.absent { background: #ef4444; }.calendar-day.late { background: #fde68a; color: #854d0e; }.calendar-day.holiday { background: #e2e8f0; }
-.routine-legend .legend-completed { background: #fee2e2; color: #b91c1c; }.routine-legend .legend-next { background: #dcfce7; color: #166534; }.routine-legend .legend-upcoming { background: #dbeafe; color: #1d4ed8; }
-.exam-row.is-completed { background: #fff1f2; }.exam-row.is-upcoming { background: #eff6ff; }.exam-row.is-next { background: #ecfdf5; }
+.routine-legend .legend-completed { background: #fee2e2; color: #b91c1c; }.routine-legend .legend-today { background: #fef3c7; color: #92400e; }.routine-legend .legend-ongoing { background: #ede9fe; color: #6d28d9; }.routine-legend .legend-next { background: #dcfce7; color: #166534; }.routine-legend .legend-upcoming { background: #dbeafe; color: #1d4ed8; }
+.exam-row.is-completed { background: #fff1f2; }.exam-row.is-upcoming { background: #eff6ff; }.exam-row.is-today { background: #fffbeb; }.exam-row.is-ongoing { background: #f5f3ff; }.exam-row.is-next { background: #ecfdf5; }
 .result-icon { background: #fff0f2; }
 .attendance-log-row strong.present { background: #dcfce7; color: #166534; }.attendance-log-row strong.absent { background: #fee2e2; color: #991b1b; }.attendance-log-row strong.late { background: #fef3c7; color: #92400e; }
 .topbar { margin-bottom: 24px; }.school-mark { border: 1px solid #e8ebf2; color: #c8102e; }.quick-card strong { min-height: 0; font-size: 13px; }.section-heading { align-items: center; }.section-heading h2,.subheading { font-size: 20px; }.section-heading button { color: #c8102e; font-size: 14px; }.content-card,.empty-card,.exam-card { box-shadow: 0 7px 22px -15px #29375060; }.page-heading { margin: 4px 0 22px; }.page-heading h1 { font-size: 26px; font-weight: 800; }.back-button { flex: 0 0 48px; width: 48px; height: 48px; border: 1px solid #e7eaf0; border-radius: 17px; box-shadow: 0 2px 6px #1621390c; color: #c8102e; font-size: 17px; }

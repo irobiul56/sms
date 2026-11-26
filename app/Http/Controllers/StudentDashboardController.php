@@ -13,6 +13,7 @@ use App\Models\Result;
 use App\Models\Student;
 use App\Models\StudentAcademicInfo;
 use App\Models\StudentHomeworkCompletion;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -159,6 +160,7 @@ class StudentDashboardController extends Controller
 
         $examRoutine = collect();
         $today = now()->toDateString();
+        $now = now();
         $nextSubjectId = null;
         if ($academicInfo?->institute_class_id) {
             $classId = $academicInfo->institute_class_id;
@@ -179,11 +181,57 @@ class StudentDashboardController extends Controller
                 ->orderBy('start_date')
                 ->get();
 
-            $nextSubjectId = $examRoutine
+            $routineSubjects = $examRoutine
                 ->flatMap(fn (Exam $exam) => $exam->examSubjects)
-                ->filter(fn ($subject) => $subject->exam_date?->toDateString() >= $today)
                 ->sortBy(fn ($subject) => $subject->exam_date->toDateString() . ' ' . ($subject->start_time?->format('H:i:s') ?? '00:00:00'))
-                ->first()?->id;
+                ->values();
+
+            $hasCompleted = false;
+            $ongoingSubject = null;
+            foreach ($routineSubjects as $subject) {
+                $date = $subject->exam_date?->toDateString();
+                $start = $date && $subject->start_time
+                    ? Carbon::parse($date . ' ' . $subject->start_time->format('H:i:s'))
+                    : null;
+                $end = $date && $subject->end_time
+                    ? Carbon::parse($date . ' ' . $subject->end_time->format('H:i:s'))
+                    : null;
+
+                if ($end && $end->lte($now)) {
+                    $hasCompleted = true;
+                } elseif ($start && $end && $start->lte($now) && $now->lt($end)) {
+                    $ongoingSubject = $subject;
+                }
+            }
+
+            if ($ongoingSubject) {
+                $nextSubjectId = $routineSubjects
+                    ->first(fn ($subject) => $subject->id !== $ongoingSubject->id
+                        && $subject->exam_date?->toDateString() . ' ' . ($subject->start_time?->format('H:i:s') ?? '00:00:00')
+                            >= $ongoingSubject->exam_date?->toDateString() . ' ' . ($ongoingSubject->start_time?->format('H:i:s') ?? '00:00:00'))
+                        ?->id;
+            } elseif ($hasCompleted) {
+                $nextSubjectId = $routineSubjects
+                    ->first(function ($subject) use ($now) {
+                        $date = $subject->exam_date?->toDateString();
+                        $end = $date && $subject->end_time
+                            ? Carbon::parse($date . ' ' . $subject->end_time->format('H:i:s'))
+                            : null;
+
+                        return $end && $end->gt($now);
+                    })?->id;
+            } else {
+                $firstToday = $routineSubjects->first(
+                    fn ($subject) => $subject->exam_date?->toDateString() === $today
+                        && $subject->end_time
+                        && Carbon::parse($today . ' ' . $subject->end_time->format('H:i:s'))->gte(now())
+                );
+                $nextSubjectId = $firstToday
+                    ? null
+                    : $routineSubjects
+                        ->first(fn ($subject) => $subject->exam_date?->toDateString() >= $today)
+                        ?->id;
+            }
         }
 
         $classRoutine = collect();
@@ -263,6 +311,13 @@ class StudentDashboardController extends Controller
                 'student_id' => $student->student_id,
                 'photo' => $student->photo ? asset('storage/' . $student->photo) : null,
                 'class' => $academicInfo?->instituteClass?->name,
+                    'group' => match ($academicInfo?->instituteClass?->group) {
+                        'science' => 'বিজ্ঞান বিভাগ',
+                        'commerce' => 'বাণিজ্য বিভাগ',
+                        'arts' => 'মানবিক বিভাগ',
+                        'general' => 'সাধারণ বিভাগ',
+                        default => null,
+                    },
                 'section' => $academicInfo?->section?->name,
                 'roll' => $academicInfo?->roll_number ?? $student->roll_no,
                 'year' => $academicInfo?->academicYear?->session,
@@ -312,18 +367,36 @@ class StudentDashboardController extends Controller
                 'name' => $exam->bn_name ?: $exam->name,
                 'start_date' => $exam->start_date->toDateString(),
                 'end_date' => $exam->end_date->toDateString(),
-                'subjects' => $exam->examSubjects->map(fn ($examSubject) => [
-                    'id' => $examSubject->id,
-                    'name' => $examSubject->instituteSubject?->bn_name ?: $examSubject->instituteSubject?->name,
-                    'date' => $examSubject->exam_date?->toDateString(),
-                    'start_time' => $examSubject->start_time?->format('H:i'),
-                    'end_time' => $examSubject->end_time?->format('H:i'),
-                    'full_marks' => $examSubject->full_marks,
-                    'status' => $examSubject->exam_date?->toDateString() < $today
-                        ? 'completed'
-                        : 'upcoming',
-                    'is_next' => $examSubject->id === $nextSubjectId,
-                ])->values(),
+                'subjects' => $exam->examSubjects->map(function ($examSubject) use ($today, $now, $nextSubjectId) {
+                    $date = $examSubject->exam_date?->toDateString();
+                    $start = $date && $examSubject->start_time
+                        ? Carbon::parse($date . ' ' . $examSubject->start_time->format('H:i:s'))
+                        : null;
+                    $end = $date && $examSubject->end_time
+                        ? Carbon::parse($date . ' ' . $examSubject->end_time->format('H:i:s'))
+                        : null;
+
+                    if ($end && $end->lte($now)) {
+                        $status = 'completed';
+                    } elseif ($start && $end && $start->lte($now) && $now->lt($end)) {
+                        $status = 'ongoing';
+                    } elseif ($date === $today) {
+                        $status = 'today';
+                    } else {
+                        $status = 'upcoming';
+                    }
+
+                    return [
+                        'id' => $examSubject->id,
+                        'name' => $examSubject->instituteSubject?->bn_name ?: $examSubject->instituteSubject?->name,
+                        'date' => $date,
+                        'start_time' => $examSubject->start_time?->format('H:i'),
+                        'end_time' => $examSubject->end_time?->format('H:i'),
+                        'full_marks' => $examSubject->full_marks,
+                        'status' => $status,
+                        'is_next' => $examSubject->id === $nextSubjectId,
+                    ];
+                })->values(),
             ])->values(),
             'classRoutine' => $classRoutine,
             'notices' => $notices->map(fn (Notice $notice) => [
